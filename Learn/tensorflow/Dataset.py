@@ -9,12 +9,14 @@ Created on Thu Feb  4 17:05:27 2016
 from __future__ import print_function
 import numpy as np
 import cPickle as pickle
-import gzip, os, tarfile, urllib
+import os, urllib, gzip, tarfile, zipfile
+import collections
 from scipy import ndimage
 
 
 class Dataset:
     notMNIST_url = 'http://yaroslavvb.com/upload/notMNIST/'
+    Text8_url = 'http://mattmahoney.net/dc/'
     notMNIST_pickle = 'notMNIST.pkl.gz'
     notMNIST_pickle_test = 'notMNIST-test.pkl.gz'
     
@@ -40,6 +42,8 @@ class Dataset:
             return self.MNIST()
         elif self.name == 'notMNIST':
             return self.notMNIST()
+        elif self.name == 'Text8':
+            return self.Text8()
         
         
     def load_test(self):
@@ -156,6 +160,28 @@ class Dataset:
             print ('Test set', test_dataset.shape, test_labels.shape)
             
         return test_dataset, test_labels
+            
+    
+    def Text8(self, pickle_file='Text8.pkl'):
+        '''
+        Returns the "Text8" dataset
+        '''         
+        # check to see if pickle file exists
+        if not os.path.exists(pickle_file):
+            if self.verbose:
+                print ('Pickle file not found ', pickle_file)      
+                        
+            data, count, dictionary, reverse_dictionary = self._get_Text8(pickle_file)
+        else:
+            with open(pickle_file, 'rb') as f:
+            #with gzip.open(pickle_file, 'rb') as f:
+                save = pickle.load(f)
+                data = save['data']
+                count = save['count']
+                dictionary = save['dictionary']
+                reverse_dictionary = save['reverse_dictionary']    
+
+        return data, count, dictionary, reverse_dictionary      
                     
             
     def reformat(self, dataset, labels):
@@ -165,9 +191,36 @@ class Dataset:
         dataset = dataset.reshape((-1, self.IMAGE_SIZE, self.IMAGE_SIZE, self.NUM_CHANNELS)).astype(np.float32)
         # Map 0 to [1.0, 0.0, 0.0 ...], 1 to [0.0, 1.0, 0.0 ...]
         labels = (np.arange(self.NUM_CLASSES) == labels[:,None]).astype(np.float32)
-        return dataset, labels   
+        return dataset, labels 
         
     
+    def _build_dictionary(self, words, vocabulary_size=50000):
+        '''        
+        Build the dictionary and replace rare words with UNK token
+        '''
+        count = [['UNK', -1]]
+        count.extend(collections.Counter(words).most_common(vocabulary_size - 1))
+        dictionary = dict()
+        for word, _ in count:
+            dictionary[word] = len(dictionary)
+        data = list()
+        unk_count = 0
+        for word in words:
+            if word in dictionary:
+                index = dictionary[word]
+            else:
+                index = 0  # dictionary['UNK']
+                unk_count = unk_count + 1
+            data.append(index)
+        count[0][1] = unk_count
+        reverse_dictionary = dict(zip(dictionary.values(), dictionary.keys()))
+
+        if self.verbose:
+            print ('Most common words (+UNK)', count[:5])
+            print ('Sample data', data[:10])
+        
+        return data, count, dictionary, reverse_dictionary
+            
     
     def _get_notMNIST(self, test_size = 20000, valid_size = 10000, train_size = -1, #200000
                       archive_filename = 'notMNIST_large.tar.gz',
@@ -181,8 +234,8 @@ class Dataset:
         train_filename = self._maybe_download(archive_filename, self.notMNIST_url, 247336696)
         test_filename = self._maybe_download(archive_filename_test, self.notMNIST_url, 8458043)
         if not tar_exists:
-            train_folders = self._extract(train_filename)
-            test_folders = self._extract(test_filename)
+            train_folders = self._extract_tar(train_filename)
+            test_folders = self._extract_tar(test_filename)
         else:
             root = os.path.splitext(os.path.splitext(archive_filename)[0])[0]
             train_folders = [os.path.join(root, d) for d in sorted(os.listdir(root))]
@@ -220,6 +273,27 @@ class Dataset:
             
         return train_dataset, train_labels, valid_dataset, valid_labels, \
             test_dataset, test_labels
+            
+            
+    def _get_Text8(self, pickle_file, archive_filename = 'text8.zip'):
+        '''
+        Gets the "Text8" dataset and stores it as pickle files
+        '''         
+        filename = self._maybe_download(archive_filename, self.Text8_url, 31344016)
+        words = self._load_words(filename)
+        
+        if self.verbose:
+            print('Data size %d' % len(words))
+                    
+        data, count, dictionary, reverse_dictionary = self._build_dictionary(words)  
+        
+        # save the data for later reuse
+        self._store_dataset_dictionary(pickle_file, data, count, dictionary, reverse_dictionary)        
+        statinfo = os.stat(pickle_file)
+        if self.verbose:
+            print ('Compressed pickle size:', statinfo.st_size)      
+        
+        return data, count, dictionary, reverse_dictionary
         
         
     def _maybe_download(self, filename, url, expected_bytes):
@@ -238,7 +312,7 @@ class Dataset:
         return filename
         
         
-    def _extract(self, filename):
+    def _extract_tar(self, filename):
         '''
         Extracts the data from a tar archive
         '''
@@ -257,6 +331,13 @@ class Dataset:
             print (data_folders)
             
         return data_folders
+        
+        
+    def _load_words(self, filename):
+        with zipfile.ZipFile(filename) as f:
+            for name in f.namelist():
+                return f.read(name).split()  
+                #return tf.compat.as_str(f.read(name)).split() 
         
         
     def _load_images(self, data_folders, min_num_images, max_num_images):
@@ -317,7 +398,7 @@ class Dataset:
         Stores the dataset as a pickle file
         '''
         try:
-            #f = open(pickle_file, 'wb')
+            #with open(pickle_file, 'wb') as f:
             with gzip.GzipFile(pickle_file, 'wb') as f:
                 save = {
                     'train_dataset': train_dataset,
@@ -328,7 +409,6 @@ class Dataset:
                     'test_labels': test_labels,
                 }
                 pickle.dump(save, f, pickle.HIGHEST_PROTOCOL)
-            #f.close()
         except Exception as e:
             print ('Unable to save data to', pickle_file, ':', e)
             raise
@@ -339,14 +419,32 @@ class Dataset:
         Stores the test dataset as a pickle file
         '''
         try:
-            #f = open(pickle_file, 'wb')
+            #with open(pickle_file, 'wb') as f:
             with gzip.GzipFile(pickle_file, 'wb') as f:
                 save = {
                     'test_dataset': test_dataset,
                     'test_labels': test_labels,
                 }
                 pickle.dump(save, f, pickle.HIGHEST_PROTOCOL)
-            #f.close()
+        except Exception as e:
+            print ('Unable to save data to', pickle_file, ':', e)
+            raise
+            
+    def _store_dataset_dictionary(self, pickle_file, 
+                                  data, count, dictionary, reverse_dictionary):
+        '''
+        Stores the dataset as a pickle file
+        '''
+        try:
+            #with gzip.GzipFile(pickle_file, 'wb') as f:
+            with open(pickle_file, 'wb') as f:
+                save = {
+                    'data': data,
+                    'count': count,
+                    'dictionary': dictionary,
+                    'reverse_dictionary': reverse_dictionary,
+                }
+                pickle.dump(save, f, pickle.HIGHEST_PROTOCOL)
         except Exception as e:
             print ('Unable to save data to', pickle_file, ':', e)
             raise
