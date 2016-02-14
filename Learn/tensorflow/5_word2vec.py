@@ -49,6 +49,9 @@ def generate_batch(batch_size, num_skips, skip_window):
     
 
 def plot(embeddings, labels):
+    '''
+    Plots the embeddings using t-SNE
+    '''
     assert embeddings.shape[0] >= len(labels), 'More labels than embeddings'
     pylab.figure(figsize=(15,15))  # in inches
     for i, label in enumerate(labels):
@@ -57,45 +60,33 @@ def plot(embeddings, labels):
         pylab.annotate(label, xy=(x, y), xytext=(5, 2), textcoords='offset points',
                        ha='right', va='bottom')
     pylab.show()
-
-
-if __name__ == '__main__':
-    print ('Loading the dataset... ')
-    start = time.time()
-    data = Dataset('Text8', reformatted=True, verbose=True)
-    data, count, dictionary, reverse_dictionary = data.load()
-    end = time.time() 
-    print ('Loading the dataset took %.2f sec.\n' % (end - start))
     
-    print ('Most common words (+UNK)', count[:5])
-    print ('Sample data', data[:10])
     
-    print('data:', [reverse_dictionary[di] for di in data[:8]])
-
-    for num_skips, skip_window in [(2, 1), (4, 2)]:
-        data_index = 0
-        batch, labels = generate_batch(batch_size=8, num_skips=num_skips, skip_window=skip_window)
-        print('\nwith num_skips = %d and skip_window = %d:' % (num_skips, skip_window))
-        print('    batch:', [reverse_dictionary[bi] for bi in batch])
-        print('    labels:', [reverse_dictionary[li] for li in labels.reshape(8)])
+def train(data, count, dictionary, reverse_dictionary, verbose=True,
+          learning_rate=1.0, num_steps = 100001, batch_size=128, 
+          embedding_size=128, skip_window=1, num_skips=2,
+          valid_size=16, valid_window=100, num_sampled=64):
+    '''
+    Trains the model
+    '''
+    global data_index
+    
+    if verbose:
+        for num_skips, skip_window in [(2, 1), (4, 2)]:
+            data_index = 0
+            batch, labels = generate_batch(batch_size=8, num_skips=num_skips, skip_window=skip_window)
+            print('\nwith num_skips = %d and skip_window = %d:' % (num_skips, skip_window))
+            print('    batch:', [reverse_dictionary[bi] for bi in batch])
+            print('    labels:', [reverse_dictionary[li] for li in labels.reshape(8)])
         
-    
-    vocabulary_size = 50000
-    batch_size = 128
-    embedding_size = 128 # Dimension of the embedding vector.
-    skip_window = 1 # How many words to consider left and right.
-    num_skips = 2 # How many times to reuse an input to generate a label.
+    vocabulary_size = len(dictionary)
     
     # We pick a random validation set to sample nearest neighbors. here we limit the
     # validation samples to the words that have a low numeric ID, which by
     # construction are also the most frequent. 
-    valid_size = 16 # Random set of words to evaluate similarity on.
-    valid_window = 100 # Only pick dev samples in the head of the distribution.
     valid_examples = np.array(random.sample(range(valid_window), valid_size))
-    num_sampled = 64 # Number of negative examples to sample.
     
-    graph = tf.Graph()
-    
+    graph = tf.Graph()    
     with graph.as_default():
 
         # Input data.
@@ -117,7 +108,7 @@ if __name__ == '__main__':
                                                          train_labels, num_sampled, vocabulary_size))
         
         # Optimizer.
-        optimizer = tf.train.AdagradOptimizer(learning_rate=1.0).minimize(loss)
+        optimizer = tf.train.AdagradOptimizer(learning_rate).minimize(loss)
         
         # Compute the similarity between minibatch examples and all embeddings.
         # We use the cosine distance:
@@ -126,7 +117,6 @@ if __name__ == '__main__':
         valid_embeddings = tf.nn.embedding_lookup(normalized_embeddings, valid_dataset)
         similarity = tf.matmul(valid_embeddings, tf.transpose(normalized_embeddings))
         
-        num_steps = 100001
         # train over the configured number of steps
         with tf.Session(graph=graph) as session:  
             start = time.time()                
@@ -166,8 +156,39 @@ if __name__ == '__main__':
             print ('Training took %.2f sec\n' % (end - start))
             
             final_embeddings = normalized_embeddings.eval()
+    
+    return final_embeddings
+    
+
+
+if __name__ == '__main__':
+    print ('Loading the dataset... ')
+    start = time.time()
+    data = Dataset('Text8', reformatted=True, verbose=True)
+    data, count, dictionary, reverse_dictionary = data.load()
+    end = time.time() 
+    print ('Loading the dataset took %.2f sec.\n' % (end - start))
         
+    print ('Most common words (+UNK)', count[:5])
+    print ('Sample data', data[:10])
+    
+    print('data:', [reverse_dictionary[di] for di in data[:8]])
         
+    
+    embedding_size = 128 # Dimension of the embedding vector.
+    skip_window = 1 # How many words to consider left and right.
+    num_skips = 2 # How many times to reuse an input to generate a label.    
+    valid_size = 16 # Random set of words to evaluate similarity on.
+    valid_window = 100 # Only pick dev samples in the head of the distribution.
+    num_sampled = 64 # Number of negative examples to sample.
+    
+    final_embeddings = train(data, count, dictionary, reverse_dictionary, verbose=True, 
+                             learning_rate=1.0, num_steps=100001, batch_size=128, 
+                             embedding_size=embedding_size, skip_window=skip_window, num_skips=num_skips, 
+                             valid_size=valid_size, valid_window=valid_window, num_sampled=num_sampled)
+        
+    
+    # visualize the embeddings data
     num_points = 400
 
     tsne = TSNE(perplexity=30, n_components=2, init='pca', n_iter=5000)
