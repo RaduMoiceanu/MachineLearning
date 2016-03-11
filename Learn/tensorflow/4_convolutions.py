@@ -8,6 +8,7 @@ Created on Sun Jan 31 14:24:41 2016
 from __future__ import print_function
 import numpy as np
 import tensorflow as tf
+from tensorflow.python import control_flow_ops
 import matplotlib.pyplot as plt
 import time
 from Dataset import Dataset
@@ -39,6 +40,39 @@ def conv2d(x, W, stride=1):
 def max_pool(x, size=2):
     return tf.nn.max_pool(x, ksize=[1, size, size, 1],
                            strides=[1, size, size, 1], padding='SAME')
+                           
+def batch_norm(x, n_out, phase_train, scope='bn', affine=True):
+    """
+    Batch normalization on convolutional maps.
+    Args:
+        x:           Tensor, 4D BHWD input maps
+        n_out:       integer, depth of input maps
+        phase_train: boolean tf.Variable, true indicates training phase
+        scope:       string, variable scope
+        affine:      whether to affine-transform outputs
+    Return:
+        normed:      batch-normalized maps
+    """
+    with tf.variable_scope(scope):
+        beta = tf.Variable(tf.constant(0.0, shape=[n_out]),
+            name='beta', trainable=True)
+        gamma = tf.Variable(tf.constant(1.0, shape=[n_out]),
+            name='gamma', trainable=affine)
+
+        batch_mean, batch_var = tf.nn.moments(x, [0,1,2], name='moments')
+        ema = tf.train.ExponentialMovingAverage(decay=0.9)
+        ema_apply_op = ema.apply([batch_mean, batch_var])
+        ema_mean, ema_var = ema.average(batch_mean), ema.average(batch_var)
+        def mean_var_with_update():
+            with tf.control_dependencies([ema_apply_op]):
+                return tf.identity(batch_mean), tf.identity(batch_var)
+        mean, var = control_flow_ops.cond(phase_train,
+            mean_var_with_update,
+            lambda: (ema_mean, ema_var))
+
+        normed = tf.nn.batch_norm_with_global_normalization(x, mean, var,
+            beta, gamma, 1e-3, affine)
+    return normed
 
     
     
@@ -108,7 +142,8 @@ def tensorflow_conv2(train_dataset, train_labels, valid_dataset, valid_labels
         # Model.
         def model(data, keep_prob=keep_probability):
             # convolutional layer 1
-            activ = tf.nn.relu(conv2d(data, W_1, stride) + b_1)
+            conv = conv2d(data, W_1, stride) + b_1
+            activ = tf.nn.relu(conv)
             pool = max_pool(activ, pool_size)
             # convolutional layer 2
             activ = tf.nn.relu(conv2d(pool, W_2, stride) + b_2)
@@ -370,7 +405,7 @@ def tensorflow_conv1(train_dataset, train_labels, valid_dataset, valid_labels
 if __name__ == '__main__':
     print ('Loading the dataset... ')
     start = time.time()
-    data = Dataset('notMNIST', reformatted=True, verbose=True)
+    data = Dataset('MNIST', reformatted=True, verbose=True)
     train_dataset, train_labels, \
             valid_dataset, valid_labels, \
             test_dataset, test_labels = data.load()
@@ -381,8 +416,8 @@ if __name__ == '__main__':
     tensorflow_conv2(train_dataset, train_labels, valid_dataset, valid_labels
                     ,test_dataset, test_labels, test_dataset_alt, test_labels_alt
                     ,batch_size=16, patch_size=5, depth=16, save_summary=False
-                    ,learn_rate=0.002, keep_probability=0.5, reg_param=0.000#1
-                    ,num_steps=501, full_layer_1=50)
+                    ,learn_rate=0.05, keep_probability=0.5, reg_param=0.001
+                    ,num_steps=5001, full_layer_1=50)
         
     print ('Dataset: ', data.name)
 
